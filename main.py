@@ -18,7 +18,7 @@ def log(msg: str):
 async def lifespan(app: FastAPI):
     global browser_instance
     try:
-        # Explicitly pointing to the binary installed by the Dockerfile
+        # Extreme stability flags for 512MB RAM environments
         browser_instance = await uc.start(
             headless=True,
             browser_executable_path="/usr/bin/google-chrome",
@@ -27,7 +27,10 @@ async def lifespan(app: FastAPI):
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--disable-extensions"
+                "--disable-software-rasterizer",
+                "--single-process",  # Reduces RAM usage significantly
+                "--no-zygote",       # Prevents fork-bombing processes
+                "--remote-debugging-port=9222"
             ]
         )
         log("Production Engine Initialized")
@@ -37,6 +40,7 @@ async def lifespan(app: FastAPI):
     if browser_instance:
         browser_instance.stop()
         log("Engine Shutdown Safely")
+
 
 app = FastAPI(lifespan=lifespan)
 
