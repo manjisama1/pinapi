@@ -2,6 +2,7 @@ import asyncio
 import sys
 import nodriver as uc
 import re
+import os
 from fastapi import FastAPI, Response, status
 from pydantic import BaseModel
 from datetime import datetime
@@ -18,7 +19,6 @@ def log(msg: str):
 async def lifespan(app: FastAPI):
     global browser_instance
     try:
-        # Extreme stability flags for 512MB RAM environments
         browser_instance = await uc.start(
             headless=True,
             browser_executable_path="/usr/bin/google-chrome",
@@ -27,10 +27,9 @@ async def lifespan(app: FastAPI):
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--disable-software-rasterizer",
-                "--single-process",  # Reduces RAM usage significantly
-                "--no-zygote",       # Prevents fork-bombing processes
-                "--remote-debugging-port=9222"
+                "--single-process",
+                "--no-zygote",
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             ]
         )
         log("Production Engine Initialized")
@@ -41,7 +40,6 @@ async def lifespan(app: FastAPI):
         browser_instance.stop()
         log("Engine Shutdown Safely")
 
-
 app = FastAPI(lifespan=lifespan)
 
 class ScrapeRequest(BaseModel):
@@ -51,42 +49,49 @@ class ScrapeRequest(BaseModel):
 async def run_scraper(input_val: str, count: int):
     url = input_val if input_val.startswith('http') else f"https://www.pinterest.com/search/pins/?q={input_val}"
     
-    # new_tab=True prevents navigation collisions
+    # Isolate session
     page = await browser_instance.get(url, new_tab=True)
     image_urls = set()
     
     try:
-        log(f"Target: {input_val}")
-        await asyncio.sleep(5) 
+        log(f"Hydrating: {input_val}")
+        await asyncio.sleep(7) # Increased wait for JS execution
         
         attempts = 0
-        while len(image_urls) < count and attempts < 15:
+        while len(image_urls) < count and attempts < 12:
             content = await page.get_content()
-            raw_links = re.findall(r'https://i\.pinimg\.com/[^\s"\'\\]+', content)
+            
+            # IMPROVED REGEX: Specifically targets Pinterest image domains and handles backslash escaping
+            # Captures: https://i.pinimg.com/236x/... and https:\/\/i.pinimg.com\/236x\/...
+            found = re.findall(r'https(?::|\\:)(?://|\\/\\/)i\.pinimg\.com(?:/|\\/)[^\s"\'<>]+', content)
             
             initial_len = len(image_urls)
-            for link in raw_links:
-                if any(res in link for res in ['/236x/', '/474x/', '/736x/']):
+            for link in found:
+                # Normalize link (remove escapes)
+                link = link.replace('\\/', '/').replace('\\:', ':')
+                
+                if any(res in link for res in ['/236x/', '/474x/', '/564x/', '/736x/']):
+                    # Transform to originals
                     clean = re.sub(r'\/(236x|474x|564x|736x)\/', '/originals/', link)
-                    clean = clean.split('"')[0].split("'")[0].split(' ')[0].replace(')', '')
+                    # Strip any trailing JSON artifacts
+                    clean = clean.split('"')[0].split("'")[0].split('\\')[0]
                     
                     if len(image_urls) < count:
                         image_urls.add(clean)
 
+            log(f"Progress: {len(image_urls)}/{count}")
+            
             if len(image_urls) >= count:
                 break
                 
+            # Aggressive scroll to trigger React lazy loading
+            await page.scroll_down(1500)
+            await asyncio.sleep(4)
+            
             if len(image_urls) == initial_len:
                 attempts += 1
-                log(f"Buffering... ({len(image_urls)}/{count})")
-                await page.scroll_down(700)
-                await asyncio.sleep(4)
-                continue
-
-            await page.scroll_down(400)
-            await asyncio.sleep(2)
+                log(f"Stalled... attempt {attempts}/12")
             
-        log(f"Success: {len(image_urls)} images captured")
         return list(image_urls)
     
     finally:
@@ -95,27 +100,23 @@ async def run_scraper(input_val: str, count: int):
 @app.get("/health")
 async def health_check():
     if browser_instance:
-        return {"status": "healthy", "engine": "running"}
-    return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return {"status": "healthy"}
+    return Response(status_code=503)
 
 @app.post("/scrape")
 async def scrape_endpoint(request: ScrapeRequest):
-    if request.desiredCount <= 0:
-        return {"success": False, "error": "Count must be positive"}
     if not browser_instance:
-        return {"success": False, "error": "Browser engine not ready"}
+        return {"success": False, "error": "Engine Not Ready"}
 
     try:
         data = await run_scraper(request.input, request.desiredCount)
         return {"success": True, "count": len(data), "data": data}
     except Exception as e:
-        log(f"Execution Error: {str(e)}")
-        return {"success": False, "error": "Internal scraper error"}
+        log(f"Scrape Error: {str(e)}")
+        return {"success": False, "error": "Execution failed"}
 
 if __name__ == "__main__":
     import uvicorn
-    import os
-    # Render automatically sets the PORT env
     port = int(os.environ.get("PORT", 3000))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="error")
-    
+        
