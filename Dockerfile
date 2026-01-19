@@ -1,10 +1,11 @@
 FROM python:3.11-slim-bookworm
 
-# Set environment variables to keep the build clean
+# Environment optimizations
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
 
-# Install system dependencies with retry logic and fix-missing
+# Install system dependencies with corrected package names
 RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
     wget \
     gnupg \
@@ -20,7 +21,7 @@ RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
     libxdamage1 \
     libxext6 \
     libxfixes3 \
-    librandr2 \
+    libxrandr2 \
     libgbm1 \
     libpango-1.0-0 \
     libcairo2 \
@@ -30,12 +31,15 @@ RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy and install requirements first for layer caching
+# Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
-# Copy the rest of the application
+# Copy application code
 COPY . .
 
-# Use the PORT env provided by Render
+# Expose the port Render expects
+EXPOSE 3000
+
+# Start application using uvicorn
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-3000}"]
