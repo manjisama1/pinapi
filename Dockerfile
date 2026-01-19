@@ -5,13 +5,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# Install Tini + Chrome + Deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tini \
     wget \
     gnupg \
     ca-certificates \
+    curl \
     procps \
+    libx11-xcb1 \
     libnss3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     libasound2 \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list' \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && apt-get clean \
@@ -36,11 +36,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-
-# Use Tini to handle Chrome processes correctly
-ENTRYPOINT ["/usr/bin/tini", "--"]
 
 EXPOSE 3000
 CMD ["python", "main.py"]
