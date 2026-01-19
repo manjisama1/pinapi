@@ -29,6 +29,11 @@ async def lifespan(app: FastAPI):
                 "--disable-gpu",
                 "--single-process",
                 "--no-zygote",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-extensions",
+                "--disable-browser-side-navigation",
+                "--disable-features=VizDisplayCompositor",
                 "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             ]
         )
@@ -37,7 +42,10 @@ async def lifespan(app: FastAPI):
         log(f"CRITICAL: Engine failed: {e}")
     yield
     if browser_instance:
-        browser_instance.stop()
+        try:
+            browser_instance.stop()
+        except:
+            pass
         log("Engine Shutdown Safely")
 
 app = FastAPI(lifespan=lifespan)
@@ -49,33 +57,26 @@ class ScrapeRequest(BaseModel):
 async def run_scraper(input_val: str, count: int):
     url = input_val if input_val.startswith('http') else f"https://www.pinterest.com/search/pins/?q={input_val}"
     
-    # Isolate session
     page = await browser_instance.get(url, new_tab=True)
     image_urls = set()
     
     try:
         log(f"Hydrating: {input_val}")
-        await asyncio.sleep(7) # Increased wait for JS execution
+        await asyncio.sleep(8) 
         
         attempts = 0
-        while len(image_urls) < count and attempts < 12:
+        while len(image_urls) < count and attempts < 10:
             content = await page.get_content()
             
-            # IMPROVED REGEX: Specifically targets Pinterest image domains and handles backslash escaping
-            # Captures: https://i.pinimg.com/236x/... and https:\/\/i.pinimg.com\/236x\/...
+            # Robust regex for escaped and clean Pinterest URLs
             found = re.findall(r'https(?::|\\:)(?://|\\/\\/)i\.pinimg\.com(?:/|\\/)[^\s"\'<>]+', content)
             
             initial_len = len(image_urls)
             for link in found:
-                # Normalize link (remove escapes)
                 link = link.replace('\\/', '/').replace('\\:', ':')
-                
                 if any(res in link for res in ['/236x/', '/474x/', '/564x/', '/736x/']):
-                    # Transform to originals
                     clean = re.sub(r'\/(236x|474x|564x|736x)\/', '/originals/', link)
-                    # Strip any trailing JSON artifacts
                     clean = clean.split('"')[0].split("'")[0].split('\\')[0]
-                    
                     if len(image_urls) < count:
                         image_urls.add(clean)
 
@@ -84,30 +85,24 @@ async def run_scraper(input_val: str, count: int):
             if len(image_urls) >= count:
                 break
                 
-            # Aggressive scroll to trigger React lazy loading
             await page.scroll_down(1500)
             await asyncio.sleep(4)
             
             if len(image_urls) == initial_len:
                 attempts += 1
-                log(f"Stalled... attempt {attempts}/12")
             
         return list(image_urls)
-    
     finally:
         await page.close()
 
 @app.get("/health")
 async def health_check():
-    if browser_instance:
-        return {"status": "healthy"}
-    return Response(status_code=503)
+    return {"status": "ok"} if browser_instance else Response(status_code=503)
 
 @app.post("/scrape")
 async def scrape_endpoint(request: ScrapeRequest):
     if not browser_instance:
         return {"success": False, "error": "Engine Not Ready"}
-
     try:
         data = await run_scraper(request.input, request.desiredCount)
         return {"success": True, "count": len(data), "data": data}
@@ -119,4 +114,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 3000))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="error")
-        
